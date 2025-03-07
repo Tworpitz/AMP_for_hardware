@@ -1,0 +1,42 @@
+robot name is: xyuan_description
+---------- Successfully Parsed XML ---------------
+root Link: base_link has 4 child(ren)
+    child(1):  base_imu
+    child(2):  leg_l1_link
+        child(1):  leg_l2_link
+            child(1):  leg_l3_link
+                child(1):  leg_l4_link
+                    child(1):  leg_l5_link
+                        child(1):  leg_l6_link
+                            child(1):  l_foot_heel2
+                            child(2):  l_foot_heel
+                            child(3):  l_foot_side
+                            child(4):  l_foot_toe
+    child(3):  leg_r1_link
+        child(1):  leg_r2_link
+            child(1):  leg_r3_link
+                child(1):  leg_r4_link
+                    child(1):  leg_r5_link
+                        child(1):  leg_r6_link
+                            child(1):  r_foot_heel2
+                            child(2):  r_foot_heel
+                            child(3):  r_foot_side
+                            child(4):  r_foot_toe
+    child(4):  yaw_link
+        child(1):  roll_Link
+            child(1):  arm_l1_link
+                child(1):  arm_l2_link
+                    child(1):  arm_l3_link
+                        child(1):  arm_l4_link
+                            child(1):  arm_l5_link
+                                child(1):  arm_l6_link
+                                    child(1):  arm_l7_link
+            child(2):  arm_r1_link
+                child(1):  arm_r2_link
+                    child(1):  arm_r3_link
+                        child(1):  arm_r4_link
+                            child(1):  arm_r5_link
+                                child(1):  arm_r6_link
+                                    child(1):  arm_r7_link
+            child(3):  head_yaw_link
+                child(1):  head_pitch_link
