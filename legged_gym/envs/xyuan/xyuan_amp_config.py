@@ -29,14 +29,14 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 import glob
 
-from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
+from legged_gym.envs.base.humanoid_config import HumanoidCfg, HumanoidCfgPPO
 
 MOTION_FILES = glob.glob("datasets/humanoid_mocap_motions/*")
 
 
-class XYuanAMPCfg(LeggedRobotCfg):
+class XYuanAMPCfg(HumanoidCfg):
 
-    class env(LeggedRobotCfg.env):
+    class env(HumanoidCfg.env):
         num_envs = 5480
         include_history_steps = None  # Number of steps of history to include.
         num_observations = 42
@@ -45,24 +45,40 @@ class XYuanAMPCfg(LeggedRobotCfg):
         reference_state_initialization_prob = 0.85
         amp_motion_files = MOTION_FILES
 
-    class init_state(LeggedRobotCfg.init_state):
-        pos = [0.0, 0.0, 0.42]  # x,y,z [m]
+    class init_state(HumanoidCfg.init_state):
+        pos = [0.0, 0.0, 0.9]  # x,y,z [m]
         default_joint_angles = {  # = target angles [rad] when action = 0.0
-            "FL_hip_joint": 0.0,  # [rad]
-            "RL_hip_joint": 0.0,  # [rad]
-            "FR_hip_joint": 0.0,  # [rad]
-            "RR_hip_joint": 0.0,  # [rad]
-            "FL_thigh_joint": 0.9,  # [rad]
-            "RL_thigh_joint": 0.9,  # [rad]
-            "FR_thigh_joint": 0.9,  # [rad]
-            "RR_thigh_joint": 0.9,  # [rad]
-            "FL_calf_joint": -1.8,  # [rad]
-            "RL_calf_joint": -1.8,  # [rad]
-            "FR_calf_joint": -1.8,  # [rad]
-            "RR_calf_joint": -1.8,  # [rad]
+            "yaw_joint": 0,
+            "roll_joint": 0,
+            "arm_l1_joint": 0,
+            "arm_l2_joint": 0,
+            "arm_l3_joint": 0,
+            "arm_l4_joint": 0,
+            "arm_l5_joint": 0,
+            "arm_l6_joint": 0,
+            "arm_l7_joint": 0,
+            "arm_r1_joint": 0,
+            "arm_r2_joint": 0,
+            "arm_r3_joint": 0,
+            "arm_r4_joint": 0,
+            "arm_r5_joint": 0,
+            "arm_r6_joint": 0,
+            "arm_l7_joint": 0,
+            "leg_l1_joint": 0,
+            "leg_l2_joint": 0,
+            "leg_l3_joint": 0,
+            "leg_l4_joint": 0,
+            "leg_l5_joint": 0,
+            "leg_l6_joint": 0,
+            "leg_r1_joint": 0,
+            "leg_r2_joint": 0,
+            "leg_r3_joint": 0,
+            "leg_r4_joint": 0,
+            "leg_r5_joint": 0,
+            "leg_r6_joint": 0
         }
 
-    class control(LeggedRobotCfg.control):
+    class control(HumanoidCfg.control):
         # PD Drive parameters:
         control_type = "P"
         stiffness = {"joint": 80.0}  # [N*m/rad]
@@ -72,29 +88,19 @@ class XYuanAMPCfg(LeggedRobotCfg):
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 6
 
-    class terrain(LeggedRobotCfg.terrain):
+    class terrain(HumanoidCfg.terrain):
         mesh_type = "plane"
         measure_heights = False
 
-    class asset(LeggedRobotCfg.asset):
+    class asset(HumanoidCfg.asset):
         file = (
             # "{LEGGED_GYM_ROOT_DIR}/resources/robots/xyuan/urdf/xyuan_description.urdf"
-            "{LEGGED_GYM_ROOT_DIR}/resources/robots/a1/urdf/a1.urdf"
+            "{LEGGED_GYM_ROOT_DIR}/resources/robots/xyuan/urdf/xyuan_description.urdf"
         )
         foot_name = "foot"
-        penalize_contacts_on = ["thigh", "calf"]  # 在包含这些字段的连杆上惩罚碰撞
-        terminate_after_contacts_on = [
-            "base",
-            "FL_calf",
-            "FR_calf",
-            "RL_calf",
-            "RR_calf",
-            "FL_thigh",
-            "FR_thigh",
-            "RL_thigh",
-            "RR_thigh",
-        ]  # 在包含这些字段的连杆上惩罚碰撞
-        self_collisions = 0  # 1 to disable, 0 to enable...bitwise filter
+        penalize_contacts_on = []  # 在包含这些字段的连杆上惩罚碰撞
+        terminate_after_contacts_on = []  # 在包含这些字段的连杆上惩罚碰撞
+        self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
 
     class domain_rand:
         randomize_friction = True
@@ -120,11 +126,11 @@ class XYuanAMPCfg(LeggedRobotCfg):
             gravity = 0.05
             height_measurements = 0.1
 
-    class rewards(LeggedRobotCfg.rewards):
+    class rewards(HumanoidCfg.rewards):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
 
-        class scales(LeggedRobotCfg.rewards.scales):
+        class scales(HumanoidCfg.rewards.scales):
             termination = 0.0
             tracking_lin_vel = 1.5 * 1.0 / (0.005 * 6)
             tracking_ang_vel = 0.5 * 1.0 / (0.005 * 6)
@@ -156,16 +162,16 @@ class XYuanAMPCfg(LeggedRobotCfg):
             heading = [-3.14, 3.14]
 
 
-class XYuanAMPCfgPPO(LeggedRobotCfgPPO):
+class XYuanAMPCfgPPO(HumanoidCfgPPO):
     runner_class_name = "AMPOnPolicyRunner"
 
-    class algorithm(LeggedRobotCfgPPO.algorithm):
+    class algorithm(HumanoidCfgPPO.algorithm):
         entropy_coef = 0.01
         amp_replay_buffer_size = 1000000
         num_learning_epochs = 5
         num_mini_batches = 4
 
-    class runner(LeggedRobotCfgPPO.runner):
+    class runner(HumanoidCfgPPO.runner):
         run_name = ""
         experiment_name = "xyuan_amp_example"
         algorithm_class_name = "AMPPPO"

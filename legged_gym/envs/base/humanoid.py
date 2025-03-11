@@ -46,7 +46,7 @@ from legged_gym.envs.base.base_task import BaseTask
 from legged_gym.utils.terrain import Terrain
 from legged_gym.utils.math import quat_apply_yaw, wrap_to_pi, torch_rand_sqrt_float
 from legged_gym.utils.helpers import class_to_dict
-from ..base.legged_robot_config import LeggedRobotCfg
+from .humanoid_config import HumanoidCfg
 from rsl_rl.datasets.motion_loader_xyuan import AMPLoader
 
 
@@ -58,8 +58,8 @@ HIP_OFFSETS = torch.tensor([
     [-0.183, -0.047, 0.]]) + COM_OFFSET
 
 
-class HumanoidRobot(BaseTask):
-    def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
+class Humanoid(BaseTask):
+    def __init__(self, cfg: HumanoidCfg, sim_params, physics_engine, sim_device, headless):
         """ Parses the provided config file,
             calls create_sim() (which creates, simulation, terrain and environments),
             initilizes pytorch buffers used during training
