@@ -79,8 +79,9 @@ def play(args):
     camera_direction = np.array(env_cfg.viewer.lookat) - np.array(env_cfg.viewer.pos)
     img_idx = 0
 
-    for i in range(10*int(env.max_episode_length)):
+    for i in range(100*int(env.max_episode_length)):
         actions = policy(obs.detach())
+        # actions = torch.zeros_like(actions)
         obs, _, rews, dones, infos, _, _ = env.step(actions.detach())
         if RECORD_FRAMES:
             if i % 2:
@@ -90,7 +91,7 @@ def play(args):
         if MOVE_CAMERA:
             camera_position += camera_vel * env.dt
             env.set_camera(camera_position, camera_position + camera_direction)
-
+        # print(env.dof_vel[1,:])
         if i < stop_state_log:
             logger.log_states(
                 {

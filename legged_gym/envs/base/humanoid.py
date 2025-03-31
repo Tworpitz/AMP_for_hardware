@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
+#
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
 #
@@ -33,6 +33,9 @@ from time import time
 from warnings import WarningMessage
 import numpy as np
 import os
+# import kinpy as kin
+import pytorch_kinematics as kin
+import pytorch3d.transforms as p3d
 
 from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
@@ -50,12 +53,12 @@ from .humanoid_config import HumanoidCfg
 from rsl_rl.datasets.motion_loader_xyuan import AMPLoader
 
 
-COM_OFFSET = torch.tensor([0.012731, 0.002186, 0.000515])
-HIP_OFFSETS = torch.tensor([
-    [0.183, 0.047, 0.],
-    [0.183, -0.047, 0.],
-    [-0.183, 0.047, 0.],
-    [-0.183, -0.047, 0.]]) + COM_OFFSET
+# COM_OFFSET = torch.tensor([0.012731, 0.002186, 0.000515])
+# HIP_OFFSETS = torch.tensor([
+#     [0.183, 0.047, 0.],
+#     [0.183, -0.047, 0.],
+#     [-0.183, 0.047, 0.],
+#     [-0.183, -0.047, 0.]]) + COM_OFFSET
 
 
 class Humanoid(BaseTask):
@@ -88,6 +91,11 @@ class Humanoid(BaseTask):
 
         if self.cfg.env.reference_state_initialization:
             self.amp_loader = AMPLoader(motion_files=self.cfg.env.amp_motion_files, device=self.device, time_between_frames=self.dt)
+        
+        print(f"Loading kinematic solver from URDF file:{self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)}")
+        self.kine_solver = kin.build_chain_from_urdf(open(self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR), 'rb').read()).to(torch.float32, self.device)
+        print(f"Solver chain:\n{self.kine_solver}")
+        print(f"{self.kine_solver.get_joints()}")
 
     def reset(self):
         """ Reset all robots"""
@@ -107,10 +115,18 @@ class Humanoid(BaseTask):
         """
         clip_actions = self.cfg.normalization.clip_actions
         self.actions = torch.clip(actions, -clip_actions, clip_actions).to(self.device)
+        if torch.isnan(self.actions).any():
+            print("Warning: NaN detected in actions in step before render") 
         # step physics and render each frame
+        if torch.isnan(self.dof_pos).any():
+            print("Warning: NaN detected in dof pos in step before render")
         self.render()
+        if torch.isnan(self.dof_pos).any():
+            print("Warning: NaN detected in dof pos in step after render")
         for _ in range(self.cfg.control.decimation):
             self.torques = self._compute_torques(self.actions).view(self.torques.shape)
+            if torch.isnan(self.torques).any():
+                print("Warning: NaN detected in torques")
             self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             self.gym.simulate(self.sim)
             if self.device == 'cpu':
@@ -129,7 +145,7 @@ class Humanoid(BaseTask):
             policy_obs = self.obs_buf
         if self.privileged_obs_buf is not None:
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
-        
+
         return policy_obs, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras, reset_env_ids, terminal_amp_states
 
     def get_observations(self):
@@ -144,6 +160,26 @@ class Humanoid(BaseTask):
             calls self._post_physics_step_callback() for common computations 
             calls self._draw_debug_vis() if needed
         """
+        if torch.isnan(self.root_states).any() | torch.isnan(self.dof_pos).any():  # 添加检查点
+            abnormal_idx1 = torch.nonzero(
+                torch.isnan(self.dof_pos).any(dim=tuple(range(1, self.root_states.ndim))),  # 沿所有非batch维度归约
+                as_tuple=False
+                ).squeeze(dim=1)  # 压缩冗余维度
+            print("NaN detected in root_states!")
+            print(f"Abnormal index: {abnormal_idx1}")
+            abnormal_idx2 = torch.nonzero(
+                torch.isnan(self.dof_pos).any(dim=tuple(range(1, self.dof_pos.ndim))),  # 沿所有非batch维度归约
+                as_tuple=False
+                ).squeeze(dim=1)  # 压缩冗余维度
+            print("NaN detected in dof_pos!")
+            print(f"Abnormal index: {abnormal_idx2}")
+            abnormal_idx = torch.tensor(list(set(abnormal_idx1.tolist()+ abnormal_idx2.tolist())),device=self.device)
+            print(abnormal_idx)
+            print(f"abnormal dof_pos:{self.dof_pos[abnormal_idx,:]}")
+            print(f"abnormal root_states:{self.root_states[abnormal_idx,:]}")
+            print(f"abnormal obs:{self.obs_buf_history[abnormal_idx,:]}")
+            self.reset_idx(abnormal_idx)  # 强制重置问题个体
+
         self.gym.refresh_actor_root_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
 
@@ -153,6 +189,12 @@ class Humanoid(BaseTask):
         # prepare quantities
         self.base_quat[:] = self.root_states[:, 3:7]
         self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+        if torch.isnan(self.base_lin_vel).any():
+            nan_indices = torch.nonzero(torch.isnan(self.base_lin_vel))
+            if len(nan_indices[0]) > 0:
+                print(f"NaN detected in base_lin_vel at indices: {nan_indices}")
+                print(f"base quat: {self.base_quat[nan_indices,:]}")
+                print(f"root states: {self.root_states[nan_indices, 7:10]}")
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
@@ -163,6 +205,8 @@ class Humanoid(BaseTask):
         self.compute_reward()
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         terminal_amp_states = self.get_amp_observations()[env_ids]
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in post_physics_step")
         self.reset_idx(env_ids)
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -200,14 +244,18 @@ class Humanoid(BaseTask):
         # avoid updating command curriculum at each step since the maximum command is common to all envs
         if self.cfg.commands.curriculum and (self.common_step_counter % self.max_episode_length==0):
             self.update_command_curriculum(env_ids)
-        
+
         # reset robot states
         if self.cfg.env.reference_state_initialization:
             frames = self.amp_loader.get_full_frame_batch(len(env_ids))
             self._reset_dofs_amp(env_ids, frames)
             self._reset_root_states_amp(env_ids, frames)
         else:
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in reset_idx1")
             self._reset_dofs(env_ids)
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in reset_idx2")
             self._reset_root_states(env_ids)
 
         self._resample_commands(env_ids)
@@ -236,7 +284,7 @@ class Humanoid(BaseTask):
         # send timeout info to the algorithm
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
-    
+
     def compute_reward(self):
         """ Compute rewards
             Calls each reward function which had a non-zero scale (processed in self._prepare_reward_function())
@@ -255,10 +303,20 @@ class Humanoid(BaseTask):
             rew = self._reward_termination() * self.reward_scales["termination"]
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
-    
+
     def compute_observations(self):
         """ Computes observations
         """
+        if torch.isnan(self.base_lin_vel).any():
+            print("Warning: NaN detected in base lin vel")
+        if torch.isnan(self.base_ang_vel).any():
+            print("Warning: NaN detected in base ang vel")
+        if torch.isnan(self.dof_pos).any():
+            print("Warning: NaN detected in dof pos")
+        if torch.isnan(self.dof_vel).any():
+            print("Warning: NaN detected in dof vel")
+        if torch.isnan(self.actions).any():
+            print("Warning: NaN detected in actions")
         self.privileged_obs_buf = torch.cat((  self.base_lin_vel * self.obs_scales.lin_vel,
                                     self.base_ang_vel  * self.obs_scales.ang_vel,
                                     self.projected_gravity,
@@ -274,6 +332,8 @@ class Humanoid(BaseTask):
 
         # add noise if needed
         if self.add_noise:
+            # print(self.privileged_obs_buf.shape)
+            # print(self.noise_scale_vec.shape)
             self.privileged_obs_buf += (2 * torch.rand_like(self.privileged_obs_buf) - 1) * self.noise_scale_vec
 
         # Remove velocity observations from policy observation.
@@ -284,11 +344,12 @@ class Humanoid(BaseTask):
 
     def get_amp_observations(self):
         joint_pos = self.dof_pos
-        foot_pos = self.foot_positions_in_base_frame(self.dof_pos).to(self.device)
+        foot_pos = self.end_positions_in_base_frame(self.dof_pos)
         base_lin_vel = self.base_lin_vel
         base_ang_vel = self.base_ang_vel
         joint_vel = self.dof_vel
         z_pos = self.root_states[:, 2:3]
+        # print(joint_pos.shape, foot_pos.shape, base_lin_vel.shape, base_ang_vel.shape, joint_vel.shape, z_pos.shape)
         return torch.cat((joint_pos, foot_pos, base_lin_vel, base_ang_vel, joint_vel, z_pos), dim=-1)
 
     def create_sim(self):
@@ -316,7 +377,7 @@ class Humanoid(BaseTask):
         cam_target = gymapi.Vec3(lookat[0], lookat[1], lookat[2])
         self.gym.viewer_camera_look_at(self.viewer, None, cam_pos, cam_target)
 
-    #------------- Callbacks --------------
+    # ------------- Callbacks --------------
     def _process_rigid_shape_props(self, props, env_id):
         """ Callback allowing to store/change/randomize the rigid shape properties of each environment.
             Called During environment creation.
@@ -382,12 +443,12 @@ class Humanoid(BaseTask):
             rng = self.cfg.domain_rand.added_mass_range
             props[0].mass += np.random.uniform(rng[0], rng[1])
         return props
-    
+
     def _post_physics_step_callback(self):
         """ Callback called before computing terminations, rewards, and observations
             Default behaviour: Compute ang vel command based on target and heading, compute measured terrain heights and randomly push robots
         """
-        # 
+        #
         env_ids = (self.episode_length_buf % int(self.cfg.commands.resampling_time / self.dt)==0).nonzero(as_tuple=False).flatten()
         self._resample_commands(env_ids)
         if self.cfg.commands.heading_command:
@@ -427,7 +488,7 @@ class Humanoid(BaseTask):
         Returns:
             [torch.Tensor]: Torques sent to the simulation
         """
-        #pd controller
+        # pd controller
         actions_scaled = actions * self.cfg.control.action_scale
         control_type = self.cfg.control.control_type
 
@@ -437,6 +498,19 @@ class Humanoid(BaseTask):
         else:
             p_gains = self.p_gains
             d_gains = self.d_gains
+
+        if torch.isnan(p_gains).any():
+            print("Warning: NaN detected in p_gains")
+        if torch.isnan(d_gains).any():
+            print("Warning: NaN detected in d_gains")
+        if torch.isnan(actions_scaled).any():
+            print("Warning: NaN detected in actions_scaled")
+        if torch.isnan(self.dof_pos).any():
+            print("Warning: NaN detected in dof_pos")
+        if torch.isnan(self.dof_vel).any():
+            print("Warning: NaN detected in dof_vel")
+        if torch.isnan(self.default_dof_pos).any():
+            print("Warning: NaN detected in default_dof_pos")
 
         if control_type=="P":
             torques = p_gains*(actions_scaled + self.default_dof_pos - self.dof_pos) - d_gains*self.dof_vel
@@ -456,7 +530,7 @@ class Humanoid(BaseTask):
         Args:
             env_ids (List[int]): Environemnt ids
         """
-        self.dof_pos[env_ids] = self.default_dof_pos * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
+        self.dof_pos[env_ids] = self.default_dof_pos# * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dof), device=self.device)
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
@@ -490,13 +564,29 @@ class Humanoid(BaseTask):
         # base position
         if self.custom_origins:
             self.root_states[env_ids] = self.base_init_state
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.1")
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.2")
             self.root_states[env_ids, :2] += torch_rand_float(-1., 1., (len(env_ids), 2), device=self.device) # xy position within 1m of the center
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.3")
         else:
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.35")
             self.root_states[env_ids] = self.base_init_state
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.4")
             self.root_states[env_ids, :3] += self.env_origins[env_ids]
+            if torch.isnan(self.root_states).any():
+                print("Warning: NaN detected in _reset_root_states 0.5")
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in _reset_root_states 1")
         # base velocities
-        self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        self.root_states[env_ids, 7:13] = torch_rand_float(-0.1, 0.1, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in _reset_root_states 2")
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
@@ -512,13 +602,18 @@ class Humanoid(BaseTask):
         # base position
         root_pos = AMPLoader.get_root_pos_batch(frames)
         root_pos[:, :2] = root_pos[:, :2] + self.env_origins[env_ids, :2]
+        root_pos[:, 2] = root_pos[:, 2] + 0.05
         self.root_states[env_ids, :3] = root_pos
         root_orn = AMPLoader.get_root_rot_batch(frames)
         self.root_states[env_ids, 3:7] = root_orn
         self.root_states[env_ids, 7:10] = quat_rotate(root_orn, AMPLoader.get_linear_vel_batch(frames))
         self.root_states[env_ids, 10:13] = quat_rotate(root_orn, AMPLoader.get_angular_vel_batch(frames))
+        # self.root_states[env_ids, 7:10] = AMPLoader.get_linear_vel_batch(frames)
+        # self.root_states[env_ids, 10:13] = AMPLoader.get_angular_vel_batch(frames)
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in _reset_root_states_amp")
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
@@ -528,6 +623,8 @@ class Humanoid(BaseTask):
         """
         max_vel = self.cfg.domain_rand.max_push_vel_xy
         self.root_states[:, 7:9] = torch_rand_float(-max_vel, max_vel, (self.num_envs, 2), device=self.device) # lin vel x/y
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in _push_robots")
         self.gym.set_actor_root_state_tensor(self.sim, gymtorch.unwrap_tensor(self.root_states))
 
     def _update_terrain_curriculum(self, env_ids):
@@ -551,7 +648,7 @@ class Humanoid(BaseTask):
                                                    torch.randint_like(self.terrain_levels[env_ids], self.max_terrain_level),
                                                    torch.clip(self.terrain_levels[env_ids], 0)) # (the minumum level is zero)
         self.env_origins[env_ids] = self.terrain_origins[self.terrain_levels[env_ids], self.terrain_types[env_ids]]
-    
+
     def update_command_curriculum(self, env_ids):
         """ Implements a curriculum of increasing commands
 
@@ -563,7 +660,6 @@ class Humanoid(BaseTask):
             self.command_ranges["lin_vel_x"][0] = np.clip(self.command_ranges["lin_vel_x"][0] - 0.5, -self.cfg.commands.max_curriculum, 0.)
             self.command_ranges["lin_vel_x"][1] = np.clip(self.command_ranges["lin_vel_x"][1] + 0.5, 0., self.cfg.commands.max_curriculum)
 
-
     def _get_noise_scale_vec(self, cfg):
         """ Sets a vector used to scale the noise added to the observations.
             [NOTE]: Must be adapted when changing the observations structure
@@ -574,7 +670,10 @@ class Humanoid(BaseTask):
         Returns:
             [torch.Tensor]: Vector of scales used to multiply a uniform distribution in [-1, 1]
         """
+
+        print(f"111{self.privileged_obs_buf[0].shape}")
         noise_vec = torch.zeros_like(self.privileged_obs_buf[0])
+        print(noise_vec.shape)
         self.add_noise = self.cfg.noise.add_noise
         noise_scales = self.cfg.noise.noise_scales
         noise_level = self.cfg.noise.noise_level
@@ -582,14 +681,14 @@ class Humanoid(BaseTask):
         noise_vec[3:6] = noise_scales.ang_vel * noise_level * self.obs_scales.ang_vel
         noise_vec[6:9] = noise_scales.gravity * noise_level
         noise_vec[9:12] = 0. # commands
-        noise_vec[12:24] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
-        noise_vec[24:36] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
-        noise_vec[36:48] = 0. # previous actions
+        noise_vec[12:33] = noise_scales.dof_pos * noise_level * self.obs_scales.dof_pos
+        noise_vec[33:54] = noise_scales.dof_vel * noise_level * self.obs_scales.dof_vel
+        noise_vec[54:75] = 0. # previous actions
         if self.cfg.terrain.measure_heights:
-            noise_vec[48:235] = noise_scales.height_measurements* noise_level * self.obs_scales.height_measurements
+            noise_vec[75:262] = noise_scales.height_measurements* noise_level * self.obs_scales.height_measurements
         return noise_vec
 
-    #----------------------------------------
+    # ----------------------------------------
     def _init_buffers(self):
         """ Initialize torch tensors which will contain simulation states and processed quantities
         """
@@ -603,6 +702,8 @@ class Humanoid(BaseTask):
 
         # create some wrapper tensors for different slices
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        if torch.isnan(self.root_states).any():
+            print("Warning: NaN detected in _init_buffers")
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
@@ -627,7 +728,14 @@ class Humanoid(BaseTask):
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,) # TODO change this
         self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
+        if torch.isnan(self.base_quat).any():
+            print("Warning: NaN detected in base quat")
+        if torch.isnan(self.root_states[:, 7:10]).any():
+            print("Warning: NaN detected in root_states[:, 7:10]")
         self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+        if torch.isnan(self.base_lin_vel).any():
+            print(f"base quat: {self.base_quat}")
+            print(f"root states: {self.root_states[:, 7:10]}")
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
         if self.cfg.terrain.measure_heights:
@@ -667,35 +775,54 @@ class Humanoid(BaseTask):
             self.cfg.domain_rand.damping_multiplier_range[1]) *
             torch.rand(num_envs, self.num_actions, device=self.device) +
             self.cfg.domain_rand.damping_multiplier_range[1]).float()
-        
+
         return p_mult * self.p_gains, d_mult * self.d_gains
 
 
-    def foot_position_in_hip_frame(self, angles, l_hip_sign=1):
-        theta_ab, theta_hip, theta_knee = angles[:, 0], angles[:, 1], angles[:, 2]
-        l_up = 0.2
-        l_low = 0.2
-        l_hip = 0.08505 * l_hip_sign
-        leg_distance = torch.sqrt(l_up**2 + l_low**2 +
-                                2 * l_up * l_low * torch.cos(theta_knee))
-        eff_swing = theta_hip + theta_knee / 2
+    def end_positions_in_base_frame(self, dof_pos):
+        dof_pos_dict = {AMPLoader.URDF_LINK_NAMES[i]: dof_pos[:, i].cpu().numpy() for i in range(len(AMPLoader.URDF_LINK_NAMES))}
+        solver_link_names = self.kine_solver.get_joint_parameter_names()
+        dof_pos_new = torch.stack([torch.tensor(dof_pos_dict[name], device=self.device) for name in solver_link_names], dim=1)
+        # print("!!!!!!end_position cal")
+        # print(dof_pos_dict)
+        # print(dof_pos[0,...])
+        # print(dof_pos_new[0,...])
+        fk_return = self.kine_solver.forward_kinematics(dof_pos_new)
+        # print(fk_return)
+        end_names = [AMPLoader.LEFT_FOOT_NAME,
+                     AMPLoader.RIGHT_FOOT_NAME,
+                     AMPLoader.LEFT_HAND_NAME,
+                     AMPLoader.RIGHT_HAND_NAME]
+        # print(end_names)
+        end_pos = torch.cat([fk_return[name].get_matrix()[:, 0:3, 3] for name in end_names],dim=1).squeeze(0)
+        # print(end_pos.shape)
+        
+        # end_handles = self.gym.find_actor_rigid_body_handle(self.env[0], self.actor_handles[0], end_names[0])
+        # end_transforms = self.gym.get_rigid_transform(self.env[0], end_handles)
+        rigid_body_names = self.gym.get_actor_rigid_body_names(self.envs[0], self.actor_handles[0])
+        end_indices = [rigid_body_names.index(name) for name in end_names]
+        base_index = rigid_body_names.index("base_link")
+        # print(end_indices)
+        rigid_body_states = gymtorch.wrap_tensor(self.gym.acquire_rigid_body_state_tensor(self.sim)).reshape(self.num_envs, len(rigid_body_names), -1)
 
-        off_x_hip = -leg_distance * torch.sin(eff_swing)
-        off_z_hip = -leg_distance * torch.cos(eff_swing)
-        off_y_hip = l_hip
+        base_pos = rigid_body_states[:, base_index, 0:3]
+        base_quat = rigid_body_states[:, base_index, 3:7]
+        end_pos_global = rigid_body_states[:, end_indices, 0:3]
+        # print(f"base_pos: {base_pos.shape}")
+        # print(f"base_quat: {base_quat.shape}")
+        # print(f"end_pos_global: {end_pos_global.shape}")
+        relative_pos = (end_pos_global - base_pos.unsqueeze(1)).unsqueeze(-2).transpose(-1,-2)
+        # print(f"relative_pos: {relative_pos.shape}")
+        R = p3d.quaternion_to_matrix(base_quat).unsqueeze(1)
+        # print(f"R: {R.shape}")
+        RT = R.transpose(-1,-2)
+        end_pos_local = (RT @ relative_pos).reshape(self.num_envs, -1)
+        # print(end_pos_local[0,:])
+        # print(end_pos[0,:])
+        # end_pos[0:3] = R @ (end_pos_global[0,:] - base_pos)
+        # end_pos[3:6] = R @ (end_pos_global[1,:] - base_pos)
 
-        off_x = off_x_hip
-        off_y = torch.cos(theta_ab) * off_y_hip - torch.sin(theta_ab) * off_z_hip
-        off_z = torch.sin(theta_ab) * off_y_hip + torch.cos(theta_ab) * off_z_hip
-        return torch.stack([off_x, off_y, off_z], dim=-1)
-
-    def foot_positions_in_base_frame(self, foot_angles):
-        foot_positions = torch.zeros_like(foot_angles)
-        for i in range(4):
-            foot_positions[:, i * 3:i * 3 + 3].copy_(
-                self.foot_position_in_hip_frame(foot_angles[:, i * 3: i * 3 + 3], l_hip_sign=(-1)**(i)))
-        foot_positions = foot_positions + HIP_OFFSETS.reshape(12,).to(self.device)
-        return foot_positions
+        return end_pos_local
 
     def _prepare_reward_function(self):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.
@@ -731,7 +858,7 @@ class Humanoid(BaseTask):
         plane_params.dynamic_friction = self.cfg.terrain.dynamic_friction
         plane_params.restitution = self.cfg.terrain.restitution
         self.gym.add_ground(self.sim, plane_params)
-    
+
     def _create_heightfield(self):
         """ Adds a heightfield terrain to the simulation, sets parameters based on the cfg.
         """
@@ -796,6 +923,8 @@ class Humanoid(BaseTask):
         asset_options.disable_gravity = self.cfg.asset.disable_gravity
 
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
+        print(f"Asset loaded: {asset_file}")
+        print(f"{self.gym.get_asset_joint_names(robot_asset)}")
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         dof_props_asset = self.gym.get_asset_dof_properties(robot_asset)
@@ -830,7 +959,7 @@ class Humanoid(BaseTask):
             pos = self.env_origins[i].clone()
             pos[:2] += torch_rand_float(-1., 1., (2,1), device=self.device).squeeze(1)
             start_pose.p = gymapi.Vec3(*pos)
-                
+
             rigid_shape_props = self._process_rigid_shape_props(rigid_shape_props_asset, i)
             self.gym.set_asset_rigid_shape_properties(robot_asset, rigid_shape_props)
             anymal_handle = self.gym.create_actor(env_handle, robot_asset, start_pose, "anymal", i, self.cfg.asset.self_collisions, 0)
@@ -968,15 +1097,15 @@ class Humanoid(BaseTask):
 
         return heights.view(self.num_envs, -1) * self.terrain.cfg.vertical_scale
 
-    #------------ reward functions----------------
+    # ------------ reward functions----------------
     def _reward_lin_vel_z(self):
         # Penalize z axis base linear velocity
         return torch.square(self.base_lin_vel[:, 2])
-    
+
     def _reward_ang_vel_xy(self):
         # Penalize xy axes base angular velocity
         return torch.sum(torch.square(self.base_ang_vel[:, :2]), dim=1)
-    
+
     def _reward_orientation(self):
         # Penalize non flat base orientation
         return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
@@ -985,7 +1114,7 @@ class Humanoid(BaseTask):
         # Penalize base height away from target
         base_height = torch.mean(self.root_states[:, 2].unsqueeze(1) - self.measured_heights, dim=1)
         return torch.square(base_height - self.cfg.rewards.base_height_target)
-    
+
     def _reward_torques(self):
         # Penalize torques
         return torch.sum(torch.square(self.torques), dim=1)
@@ -993,23 +1122,23 @@ class Humanoid(BaseTask):
     def _reward_dof_vel(self):
         # Penalize dof velocities
         return torch.sum(torch.square(self.dof_vel), dim=1)
-    
+
     def _reward_dof_acc(self):
         # Penalize dof accelerations
         return torch.sum(torch.square((self.last_dof_vel - self.dof_vel) / self.dt), dim=1)
-    
+
     def _reward_action_rate(self):
         # Penalize changes in actions
         return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
-    
+
     def _reward_collision(self):
         # Penalize collisions on selected bodies
         return torch.sum(1.*(torch.norm(self.contact_forces[:, self.penalised_contact_indices, :], dim=-1) > 0.1), dim=1)
-    
+
     def _reward_termination(self):
         # Terminal reward / penalty
         return self.reset_buf * ~self.time_out_buf
-    
+
     def _reward_dof_pos_limits(self):
         # Penalize dof positions too close to the limit
         out_of_limits = -(self.dof_pos - self.dof_pos_limits[:, 0]).clip(max=0.) # lower limit
@@ -1047,12 +1176,12 @@ class Humanoid(BaseTask):
         rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1 #no reward for zero command
         self.feet_air_time *= ~contact_filt
         return rew_airTime
-    
+
     def _reward_stumble(self):
         # Penalize feet hitting vertical surfaces
         return torch.any(torch.norm(self.contact_forces[:, self.feet_indices, :2], dim=2) >\
              5 *torch.abs(self.contact_forces[:, self.feet_indices, 2]), dim=1)
-        
+
     def _reward_stand_still(self):
         # Penalize motion at zero commands
         return torch.sum(torch.abs(self.dof_pos - self.default_dof_pos), dim=1) * (torch.norm(self.commands[:, :2], dim=1) < 0.1)

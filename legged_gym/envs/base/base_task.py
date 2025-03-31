@@ -140,7 +140,13 @@ class BaseTask():
 
             # fetch results
             if self.device != 'cpu':
+                if torch.isnan(self.obs_buf).any():
+                    print("Warning: NaN detected in observations1")
                 self.gym.fetch_results(self.sim, True)
+                if torch.isnan(self.obs_buf).any():
+                    print("Warning: NaN detected in observations2")
+                if torch.isnan(self.dof_pos).any():
+                    print("Warning: NaN detected in dof_pos in render")
 
             # step graphics
             if self.enable_viewer_sync:

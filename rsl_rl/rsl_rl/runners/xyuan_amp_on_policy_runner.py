@@ -29,12 +29,14 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import time
+import datetime
 import os
 from collections import deque
 import statistics
 
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 import torch
 
 from rsl_rl.algorithms import AMPPPO, PPO
@@ -44,7 +46,7 @@ from rsl_rl.algorithms.amp_discriminator import AMPDiscriminator
 from rsl_rl.datasets.motion_loader_xyuan import AMPLoader
 from rsl_rl.utils.utils import Normalizer
 
-class AMPOnPolicyRunner:
+class XyuanAMPOnPolicyRunner:
 
     def __init__(self,
                  env: VecEnv,
@@ -97,13 +99,18 @@ class AMPOnPolicyRunner:
         # Log
         self.log_dir = log_dir
         self.writer = None
+        # self.logger = wandb.init(entity="1624857290-huazhong-university-of-science-and-technology",
+        #                          project="AMP for hardware xyuan ver.",
+        #                          name= f"{datetime.datetime.now()}",)
         self.tot_timesteps = 0
+        self.tot_timesteps_w = 0
         self.tot_time = 0
+        self.tot_time_w = 0
         self.current_learning_iteration = 0
 
         _, _ = self.env.reset()
     
-    def learn(self, num_learning_iterations, init_at_random_ep_len=False):
+    def learn(self, num_learning_iterations, init_at_random_ep_len=False, logger=None):
         # initialize writer
         if self.log_dir is not None and self.writer is None:
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
@@ -130,7 +137,17 @@ class AMPOnPolicyRunner:
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs, critic_obs, amp_obs)
+                    if torch.isnan(actions).any():
+                        print("NAN in actions")
+                        print(actions)
+                    if torch.isnan(obs).any():
+                        print("NAN in obs before step")
+                        print(obs)
+
                     obs, privileged_obs, rewards, dones, infos, reset_env_ids, terminal_amp_states = self.env.step(actions)
+                    if torch.isnan(obs).any():
+                        print("NAN in obs after step")
+                        print(obs)
                     next_amp_obs = self.env.get_amp_observations()
 
                     critic_obs = privileged_obs if privileged_obs is not None else obs
@@ -139,7 +156,8 @@ class AMPOnPolicyRunner:
                     # Account for terminal states.
                     next_amp_obs_with_term = torch.clone(next_amp_obs)
                     next_amp_obs_with_term[reset_env_ids] = terminal_amp_states
-
+                    # print(f"amp_obs:{amp_obs[0,...]}")
+                    # print(f"next_amp_obs_with_term:{next_amp_obs_with_term[0,...]}")
                     rewards = self.alg.discriminator.predict_amp_reward(
                         amp_obs, next_amp_obs_with_term, rewards, normalizer=self.alg.amp_normalizer)[0]
                     amp_obs = torch.clone(next_amp_obs)
@@ -172,9 +190,61 @@ class AMPOnPolicyRunner:
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
+
+            if logger is not None:
+                self.wandb_log(locals(), logger)
         
         self.current_learning_iteration += num_learning_iterations
+        if logger is not None:
+            logger.finish()
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+
+    def wandb_log(self, locs, logger):
+        self.tot_timesteps_w += self.num_steps_per_env * self.env.num_envs
+        self.tot_time_w += locs['collection_time'] + locs['learn_time']
+        iteration_time = locs['collection_time'] + locs['learn_time']
+
+        # if locs['ep_infos']:
+            # for key in locs['ep_infos'][0]:
+            #     infotensor = torch.tensor([], device=self.device)
+            #     for ep_info in locs['ep_infos']:
+            #         # handle scalar and zero dimensional tensor infos
+            #         if not isinstance(ep_info[key], torch.Tensor):
+            #             ep_info[key] = torch.Tensor([ep_info[key]])
+            #         if len(ep_info[key].shape) == 0:
+            #             ep_info[key] = ep_info[key].unsqueeze(0)
+            #         infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
+            #     value = torch.mean(infotensor)
+            #     self.writer.add_scalar('Episode/' + key, value, locs['it'])
+            #     ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+        mean_std = self.alg.actor_critic.std.mean()
+        fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
+
+        if len(locs['rewbuffer']) > 0:
+            logger.log({"Loss/value_function_loss": locs['mean_value_loss'],
+                        "Loss/surrogate_loss": locs['mean_surrogate_loss'],
+                        "Loss/AMP_loss": locs['mean_amp_loss'],
+                        "Loss/AMP_grad_pen_loss": locs['mean_grad_pen_loss'],
+                        "Loss/learning_rate": self.alg.learning_rate,
+                        "Loss/mean_noise_std": mean_std.item(),
+                        "Loss/total_fps": fps,
+                        "Loss/collection_time": locs['collection_time'],
+                        "Loss/learning_time": locs['learn_time'],
+                        'Loss/AMP_mean_policy_pred': locs['mean_policy_pred'],
+                        'Loss/AMP_mean_expert_pred': locs['mean_expert_pred'],
+                        'Train/mean_reward': statistics.mean(locs['rewbuffer']),
+                        'Train/mean_episode_length': statistics.mean(locs['lenbuffer']),
+                        'Train/mean_reward/time': statistics.mean(locs['rewbuffer'])/self.tot_time_w,})
+        else:
+            logger.log({"Loss/value_function_loss": locs['mean_value_loss'],
+                        "Loss/surrogate_loss": locs['mean_surrogate_loss'],
+                        "Loss/AMP_loss": locs['mean_amp_loss'],
+                        "Loss/AMP_grad_pen_loss": locs['mean_grad_pen_loss'],
+                        "Loss/learning_rate": self.alg.learning_rate,
+                        "Loss/mean_noise_std": mean_std.item(),
+                        "Loss/total_fps": fps,
+                        "Loss/collection_time": locs['collection_time'],
+                        "Loss/learning_time": locs['learn_time']})
 
     def log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs

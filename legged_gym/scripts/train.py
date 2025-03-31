@@ -37,11 +37,20 @@ from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
 import torch
 
+import wandb
+import datetime
+
 def train(args):
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
-    ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
+    if args.task == 'xyuan_amp':
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True, logger=wandb_logger)
+    else:
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True)
 
 if __name__ == '__main__':
     args = get_args()
+    wandb_logger = wandb.init(entity="1624857290-huazhong-university-of-science-and-technology",
+                    project="AMP for hardware xyuan ver.",
+                    name= f"{datetime.datetime.now()}")
     train(args)

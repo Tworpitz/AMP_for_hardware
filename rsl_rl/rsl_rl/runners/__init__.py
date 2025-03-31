@@ -30,3 +30,4 @@
 
 from .on_policy_runner import OnPolicyRunner
 from .amp_on_policy_runner import AMPOnPolicyRunner
+from .xyuan_amp_on_policy_runner import XyuanAMPOnPolicyRunner

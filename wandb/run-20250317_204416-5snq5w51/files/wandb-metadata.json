@@ -1,0 +1,45 @@
+{
+  "os":  "Linux-5.15.0-134-generic-x86_64-with-glibc2.17",
+  "python":  "CPython 3.8.20",
+  "startedAt":  "2025-03-17T12:44:16.981946Z",
+  "args":  [
+    "--task=xyuan_amp"
+  ],
+  "program":  "legged_gym/scripts/train.py",
+  "codePath":  "legged_gym/scripts/train.py",
+  "git":  {
+    "remote":  "https://github.com/Alescontrela/AMP_for_hardware.git",
+    "commit":  "486f7047706f386c5c941b660916e8d1106daf3e"
+  },
+  "email":  "1624857290@qq.com",
+  "root":  "/home/tworpitz/Documents/Projects/AMP_for_hardware/AMP_for_hardware",
+  "host":  "tworpitz-MSI",
+  "executable":  "/home/tworpitz/miniconda3/envs/amp/bin/python",
+  "codePathLocal":  "legged_gym/scripts/train.py",
+  "cpu_count":  8,
+  "cpu_count_logical":  16,
+  "gpu":  "NVIDIA GeForce RTX 4070",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "502896943104",
+      "used":  "282900373504"
+    }
+  },
+  "memory":  {
+    "total":  "32694480896"
+  },
+  "cpu":  {
+    "count":  8,
+    "countLogical":  16
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 4070",
+      "memoryTotal":  "12878610432",
+      "cudaCores":  5888,
+      "architecture":  "Ada"
+    }
+  ],
+  "cudaVersion":  "12.2"
+}

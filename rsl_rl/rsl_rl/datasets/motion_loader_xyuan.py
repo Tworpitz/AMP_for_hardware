@@ -14,13 +14,49 @@ from rsl_rl.datasets import motion_util
 
 class AMPLoader:
 
+    LEG_DOF = 6
+    ARM_DOF = 4
+    WAIST_DOF = 1
+
+    LEFT_LEG_START_IDX = 0
+    LEFT_LEG_END_IDX = LEFT_LEG_START_IDX + LEG_DOF - 1
+    RIGHT_LEG_START_IDX = LEFT_LEG_END_IDX + 1
+    RIGHT_LEG_END_IDX = RIGHT_LEG_START_IDX + LEG_DOF - 1
+    WAIST_DOF_START_IDX = RIGHT_LEG_END_IDX + 1
+    WAIST_DOF_END_IDX = WAIST_DOF_START_IDX + WAIST_DOF - 1
+    LEFT_ARM_START_IDX = WAIST_DOF_END_IDX + 1
+    LEFT_ARM_END_IDX = LEFT_ARM_START_IDX + ARM_DOF - 1
+    RIGHT_ARM_START_IDX = LEFT_ARM_END_IDX + 1
+    RIGHT_ARM_END_IDX = RIGHT_LEG_START_IDX + ARM_DOF - 1
+    
+    LEG_START_IDX = min(LEFT_LEG_START_IDX, RIGHT_LEG_START_IDX)
+    LEG_END_IDX = max(LEFT_LEG_END_IDX, RIGHT_LEG_END_IDX)
+    ARM_START_IDX = min(LEFT_ARM_START_IDX, RIGHT_ARM_START_IDX)
+    ARM_END_IDX = max(LEFT_ARM_END_IDX, RIGHT_ARM_END_IDX)
+
+    LEFT_HAND_NAME = "arm_l4_link"
+    RIGHT_HAND_NAME = "arm_r4_link"
+    LEFT_FOOT_NAME = "leg_l6_link"
+    RIGHT_FOOT_NAME = "leg_r6_link"
+
+    # URDF_LINK_NAMES = ['leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint', 'leg_l6_joint',
+    #                    'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint', 'leg_r6_joint', 
+    #                    'yaw_joint', 'roll_joint', 
+    #                    'arm_l1_joint', 'arm_l2_joint', 'arm_l3_joint', 'arm_l4_joint', 'arm_l5_joint', 'arm_l6_joint', 'arm_l7_joint', 
+    #                    'arm_r1_joint', 'arm_r2_joint', 'arm_r3_joint', 'arm_r4_joint', 'arm_r5_joint', 'arm_r6_joint', 'arm_r7_joint']
+    URDF_LINK_NAMES = ['leg_l1_joint', 'leg_l2_joint', 'leg_l3_joint', 'leg_l4_joint', 'leg_l5_joint', 'leg_l6_joint', 
+                       'leg_r1_joint', 'leg_r2_joint', 'leg_r3_joint', 'leg_r4_joint', 'leg_r5_joint', 'leg_r6_joint', 
+                       'yaw_joint', 
+                       'arm_l1_joint', 'arm_l2_joint', 'arm_l3_joint', 'arm_l4_joint', 
+                       'arm_r1_joint', 'arm_r2_joint', 'arm_r3_joint', 'arm_r4_joint']
+
     POS_SIZE = 3
     ROT_SIZE = 4
-    JOINT_POS_SIZE = 12
+    JOINT_POS_SIZE = 21
     TAR_TOE_POS_LOCAL_SIZE = 12
     LINEAR_VEL_SIZE = 3
     ANGULAR_VEL_SIZE = 3
-    JOINT_VEL_SIZE = 12
+    JOINT_VEL_SIZE = 21
     TAR_TOE_VEL_LOCAL_SIZE = 12
 
     ROOT_POS_START_IDX = 0
@@ -62,7 +98,7 @@ class AMPLoader:
         """
         self.device = device
         self.time_between_frames = time_between_frames
-        
+
         # Values to store for each trajectory.
         self.trajectories = []
         self.trajectories_full = []
@@ -78,10 +114,11 @@ class AMPLoader:
             with open(motion_file, "r") as f:
                 motion_json = json.load(f)
                 motion_data = np.array(motion_json["Frames"])
-                motion_data = self.reorder_from_pybullet_to_isaac(motion_data)
+                # motion_data = self.reorder_from_pybullet_to_isaac(motion_data)
 
                 # Normalize and standardize quaternions.
                 for f_i in range(motion_data.shape[0]):
+                    # x y z w
                     root_rot = AMPLoader.get_root_rot(motion_data[f_i])
                     root_rot = pose3d.QuaternionNormalize(root_rot)
                     root_rot = motion_util.standardize_quaternion(root_rot)
@@ -90,7 +127,7 @@ class AMPLoader:
                         AMPLoader.POS_SIZE:
                             (AMPLoader.POS_SIZE +
                              AMPLoader.ROT_SIZE)] = root_rot
-                
+
                 # Remove first 7 observation dimensions (root_pos and root_orn).
                 self.trajectories.append(torch.tensor(
                     motion_data[
@@ -110,7 +147,7 @@ class AMPLoader:
                 self.trajectory_num_frames.append(float(motion_data.shape[0]))
 
             print(f"Loaded {traj_len}s. motion from {motion_file}.")
-        
+
         # Trajectory weights are used to sample some trajectories more than others.
         self.trajectory_weights = np.array(self.trajectory_weights) / np.sum(self.trajectory_weights)
         self.trajectory_frame_durations = np.array(self.trajectory_frame_durations)
@@ -127,7 +164,6 @@ class AMPLoader:
             self.preloaded_s_next = self.get_full_frame_at_time_batch(traj_idxs, times + self.time_between_frames)
             print(f'Finished preloading')
 
-
         self.all_trajectories_full = torch.vstack(self.trajectories_full)
 
     def reorder_from_pybullet_to_isaac(self, motion_data):
@@ -142,7 +178,7 @@ class AMPLoader:
         jp_fr, jp_fl, jp_rr, jp_rl = np.split(
             AMPLoader.get_joint_pose_batch(motion_data), 4, axis=1)
         joint_pos = np.hstack([jp_fl, jp_fr, jp_rl, jp_rr])
-    
+
         fp_fr, fp_fl, fp_rr, fp_rl = np.split(
             AMPLoader.get_tar_toe_pos_local_batch(motion_data), 4, axis=1)
         foot_pos = np.hstack([fp_fl, fp_fr, fp_rl, fp_rr])
@@ -249,7 +285,7 @@ class AMPLoader:
         blend = torch.tensor(p * n - idx_low, device=self.device, dtype=torch.float32).unsqueeze(-1)
 
         pos_blend = self.slerp(all_frame_pos_starts, all_frame_pos_ends, blend)
-        rot_blend = utils.quaternion_slerp(all_frame_rot_starts, all_frame_rot_ends, blend)
+        rot_blend = utils.quaternion_slerp(all_frame_rot_starts.clone(), all_frame_rot_ends.clone(), blend)
         amp_blend = self.slerp(all_frame_amp_starts, all_frame_amp_ends, blend)
         return torch.cat([pos_blend, rot_blend, amp_blend], dim=-1)
 
@@ -334,7 +370,7 @@ class AMPLoader:
                     s_next.append(
                         self.get_frame_at_time(
                             traj_idx, frame_time + self.time_between_frames))
-                
+
                 s = torch.vstack(s)
                 s_next = torch.vstack(s_next)
             yield s, s_next
