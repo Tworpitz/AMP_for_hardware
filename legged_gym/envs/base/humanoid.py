@@ -53,13 +53,6 @@ from .humanoid_config import HumanoidCfg
 from rsl_rl.datasets.motion_loader_xyuan import AMPLoader
 
 
-# COM_OFFSET = torch.tensor([0.012731, 0.002186, 0.000515])
-# HIP_OFFSETS = torch.tensor([
-#     [0.183, 0.047, 0.],
-#     [0.183, -0.047, 0.],
-#     [-0.183, 0.047, 0.],
-#     [-0.183, -0.047, 0.]]) + COM_OFFSET
-
 
 class Humanoid(BaseTask):
     def __init__(self, cfg: HumanoidCfg, sim_params, physics_engine, sim_device, headless):
